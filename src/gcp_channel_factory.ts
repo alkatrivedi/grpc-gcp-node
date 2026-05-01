@@ -35,6 +35,8 @@ export interface GcpChannelFactoryInterface extends grpcType.ChannelInterface {
   bind(channelRef: ChannelRef, affinityKey: string): void;
   unbind(boundKey?: string): void;
   shouldRequestDebugHeaders(lastRequested: Date | null) : boolean;
+  isBound(affinityKey: string): boolean;
+  bindIfUnbound(channelRef: ChannelRef, affinityKey: string): boolean;
 
 }
 
@@ -247,6 +249,29 @@ export function getGcpChannelFactoryClass(
         this.affinityKeyToChannelRef[affinityKey] = channelRef;
       }
       this.affinityKeyToChannelRef[affinityKey].affinityCountIncr();
+    }
+
+    isBound(affinityKey: string): boolean {
+      return !!this.affinityKeyToChannelRef[affinityKey];
+    }
+
+    /**
+     * Binds an affinity key to a channel if it is not already bound.
+     * This ensures atomic binding on the first request of a transaction,
+     * preventing race conditions when multiple concurrent requests start.
+     * 
+     * @param channelRef The channel to bind to.
+     * @param affinityKey The unique key for the transaction.
+     * @returns {boolean} True if the key was newly bound, false if it was already bound.
+     */
+    bindIfUnbound(channelRef: ChannelRef, affinityKey: string): boolean {
+      if (!affinityKey || !channelRef) return false;
+      if (!this.affinityKeyToChannelRef[affinityKey]) {
+        this.affinityKeyToChannelRef[affinityKey] = channelRef;
+        channelRef.affinityCountIncr();
+        return true;
+      }
+      return false;
     }
 
     /**

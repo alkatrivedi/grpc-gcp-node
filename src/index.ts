@@ -16,10 +16,10 @@
  *
  */
 import * as grpcType from '@grpc/grpc-js';
-import {GrpcInterface} from './grpc_interface';
+import { GrpcInterface } from './grpc_interface';
 import * as util from 'util';
 
-import {ChannelRef} from './channel_ref';
+import { ChannelRef } from './channel_ref';
 import {
   GcpChannelFactoryInterface,
   getGcpChannelFactoryClass,
@@ -85,7 +85,11 @@ const setup = (grpc: GrpcModule) => {
     const callOptions = callProperties.callOptions;
     const callback = callProperties.callback;
 
-    const preProcessResult = preProcess(channelFactory, path, argument);
+    // Extract the custom affinity key from metadata if provided by the client.
+    // This allows overriding the default message-based affinity for multiplexed sessions.
+    const overrideKeyHeaders = metadata.get('x-grpc-gcp-affinity-key');
+    const overrideKey = overrideKeyHeaders.length > 0 ? (overrideKeyHeaders[0] as string) : undefined;
+    const preProcessResult = preProcess(channelFactory, path, argument, overrideKey);
     const channelRef = preProcessResult.channelRef;
 
     const boundKey = preProcessResult.boundKey;
@@ -128,6 +132,13 @@ const setup = (grpc: GrpcModule) => {
                   boundKey,
                   firstMessage
                 );
+
+                // Signal to grpc-gcp to unbind the affinity key and clean up memory 
+                // since this transaction is now complete.
+                const unbindHeaders = metadata.get('x-grpc-gcp-unbind');
+                if (unbindHeaders && unbindHeaders.length > 0 && unbindHeaders[0] === 'true') {
+                  channelFactory.unbind(boundKey);
+                }
               }
               next(status);
             },
@@ -183,11 +194,12 @@ const setup = (grpc: GrpcModule) => {
     channelFactory: GcpChannelFactoryInterface,
     path: string,
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
-    argument?: any
-  ): {boundKey: string | undefined; channelRef: ChannelRef} {
+    argument?: any,
+    overrideAffinityKey?: string
+  ): { boundKey: string | undefined; channelRef: ChannelRef } {
     const affinityConfig = channelFactory.getAffinityConfig(path);
-    let boundKey;
-    if (argument && affinityConfig) {
+    let boundKey = overrideAffinityKey;
+    if (!boundKey && argument && affinityConfig) {
       const command = affinityConfig.command;
       if (
         command === AffinityConfig.Command.BOUND ||
@@ -201,6 +213,11 @@ const setup = (grpc: GrpcModule) => {
     }
     const channelRef = channelFactory.getChannelRef(boundKey);
     channelRef.activeStreamsCountIncr();
+
+    if (overrideAffinityKey) {
+      channelFactory.bindIfUnbound(channelRef, overrideAffinityKey);
+    }
+
     return {
       boundKey,
       channelRef,
